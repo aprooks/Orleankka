@@ -1,34 +1,53 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Runtime.Serialization;
+using System.Linq;
 using System.Threading.Tasks;
 
-using Orleans;
+using Orleans.CodeGeneration;
+using Orleans.Concurrency;
+using Orleans.Serialization;
 using Orleans.Streams;
+
+using Microsoft.Extensions.DependencyInjection;
+
+using Orleans.Runtime;
 
 namespace Orleankka
 {
     using Utility;
 
-    [Serializable]
+    [Serializable, Immutable]
     [DebuggerDisplay("s->{ToString()}")]
-    public class StreamRef : Ref, IEquatable<StreamRef>, IEquatable<StreamPath>, ISerializable
+    public class StreamRef : IEquatable<StreamRef>, IEquatable<StreamPath>
     {
-        public static StreamRef Deserialize(string path) => Deserialize(StreamPath.Deserialize(path));
-        public static StreamRef Deserialize(StreamPath path) => new StreamRef(path);
+        [NonSerialized]
+        readonly IStreamProvider provider;
 
-        protected internal StreamRef(StreamPath path)
+        protected internal StreamRef(StreamPath path, IStreamProvider provider = null)
         {
             Path = path;
+            this.provider = provider;
         }
 
+        [NonSerialized]
         IAsyncStream<object> endpoint;
-        IAsyncStream<object> Endpoint => endpoint ?? (endpoint = Path.Proxy());
+        IAsyncStream<object> Endpoint
+        {
+            get
+            {
+                if (endpoint != null)
+                    return endpoint;
+                
+                if (provider == null)
+                    throw new InvalidOperationException($"StreamRef [{Path}] has not been bound to runtime");
+
+                return endpoint = provider.GetStream<object>(Guid.Empty, Path.Id);
+            }
+        }
 
         public StreamPath Path { get; }
-        public override string Serialize() => Path.Serialize();
-
+        
         public virtual Task Push(object item)
         {
             return Endpoint.OnNextAsync(item);
@@ -90,7 +109,7 @@ namespace Orleankka
             return Subscribe(item =>
             {
                 callback(item);
-                return TaskDone.Done;
+                return Task.CompletedTask;
             },
             filter);
         }
@@ -113,61 +132,19 @@ namespace Orleankka
             return Subscribe(item =>
             {
                 callback((T)item);
-                return TaskDone.Done;
+                return Task.CompletedTask;
             }, 
             filter);
         }
 
-        public virtual async Task Subscribe(Actor actor, StreamFilter filter = null)
+        /// <summary>
+        /// Returns a list of all current stream subscriptions.
+        /// </summary>
+        /// <returns> A promise for a list of StreamSubscription </returns>
+        public virtual async Task<IList<StreamSubscription>> Subscriptions()
         {
-            Requires.NotNull(actor, nameof(actor));
-
-            var handles = await GetAllSubscriptionHandles();
-            if (handles.Count == 1)
-                return;
-
-            Debug.Assert(handles.Count == 0,
-                "We should keep only one active subscription per-stream per-actor");
-
-            var observer = new Observer((item, token) => actor.OnReceive(item));
-
-            await Endpoint
-                    .SubscribeAsync(observer, null, StreamFilter.Internal.Predicate, filter ?? new StreamFilter(actor))
-                    ;
-        }
-
-        public virtual async Task Unsubscribe(Actor actor)
-        {
-            Requires.NotNull(actor, nameof(actor));
-
-            var handles = await GetAllSubscriptionHandles();
-            if (handles.Count == 0)
-                return;
-
-            Debug.Assert(handles.Count == 1, 
-                "We should keep only one active subscription per-stream per-actor");
-
-            await handles[0].UnsubscribeAsync();
-        }
-
-        public virtual async Task Resume(Actor actor)
-        {
-            Requires.NotNull(actor, nameof(actor));
-
-            var handles = await GetAllSubscriptionHandles();
-            if (handles.Count == 0)
-                return;
-
-            Debug.Assert(handles.Count == 1,
-                "We should keep only one active subscription per-stream per-actor");
-
-            var observer = new Observer((item, token) => actor.OnReceive(item));
-            await handles[0].ResumeAsync(observer);
-        }
-
-        internal Task<IList<StreamSubscriptionHandle<object>>> GetAllSubscriptionHandles()
-        {
-            return Endpoint.GetAllSubscriptionHandles();
+            var handles = await Endpoint.GetAllSubscriptionHandles();
+            return handles.Select(x => new StreamSubscription(x)).ToList();
         }
 
         public bool Equals(StreamRef other)
@@ -182,6 +159,8 @@ namespace Orleankka
                     || obj.GetType() == GetType() && Equals((StreamRef)obj));
         }
 
+        public static implicit operator StreamPath(StreamRef arg) => arg.Path;
+
         public bool Equals(StreamPath other) => Path.Equals(other);
         public override int GetHashCode() => Path.GetHashCode();
 
@@ -190,22 +169,31 @@ namespace Orleankka
 
         public override string ToString() => Path.ToString();
 
-        #region Default Binary Serialization
+        #region Orleans Native Serialization
 
-        public void GetObjectData(SerializationInfo info, StreamingContext context)
+        [CopierMethod]
+        static object Copy(object input, ICopyContext context) => input;
+
+        [SerializerMethod]
+        static void Serialize(object input, ISerializationContext context, Type expected)
         {
-            info.AddValue("path", Serialize(), typeof(string));
+            var writer = context.StreamWriter;
+            var @ref = (StreamRef)input;
+            writer.Write(@ref.Path);
         }
 
-        public StreamRef(SerializationInfo info, StreamingContext context)
+        [DeserializerMethod]
+        static object Deserialize(Type t, IDeserializationContext context)
         {
-            var value = (string)info.GetValue("path", typeof(string));
-            Path = StreamPath.Deserialize(value);
+            var reader = context.StreamReader;
+            var path = StreamPath.Parse(reader.ReadString());
+            var provider = context.ServiceProvider.GetServiceByName<IStreamProvider>(path.Provider);
+            return new StreamRef(path, provider);
         }
 
         #endregion
 
-        class Observer : IAsyncObserver<object>
+        internal class Observer : IAsyncObserver<object>
         {
             readonly Func<object, StreamSequenceToken, Task> callback;
 
@@ -217,8 +205,8 @@ namespace Orleankka
             public Task OnNextAsync(object item, StreamSequenceToken token = null) 
                 => callback(item, token);
 
-            public Task OnCompletedAsync()           => TaskDone.Done;
-            public Task OnErrorAsync(Exception ex)   => TaskDone.Done;
+            public Task OnCompletedAsync()           => Task.CompletedTask;
+            public Task OnErrorAsync(Exception ex)   => Task.CompletedTask;
         }
     }
 }

@@ -1,8 +1,6 @@
-﻿using System.Reflection;
-using System.Runtime.CompilerServices;
-
-[assembly: AssemblyTitle("Orleankka")]
+﻿using System.Runtime.CompilerServices;
 
 [assembly: InternalsVisibleTo("Orleankka.Tests")]
-[assembly: InternalsVisibleTo("Orleankka.Azure")]
 [assembly: InternalsVisibleTo("Orleankka.TestKit")]
+[assembly: InternalsVisibleTo("Orleankka.Runtime")]
+[assembly: InternalsVisibleTo("Orleankka.FSharp")]

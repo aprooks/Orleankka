@@ -4,8 +4,6 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 
-using Orleans;
-
 namespace Orleankka.TestKit
 {
     using Services;
@@ -13,21 +11,27 @@ namespace Orleankka.TestKit
     public class ReminderServiceMock : IReminderService, IEnumerable<RecordedReminder>
     {
         readonly Dictionary<string, RecordedReminder> reminders = new Dictionary<string, RecordedReminder>();
+        readonly List<RecordedReminderRequest> requests = new List<RecordedReminderRequest>();
 
         Task IReminderService.Register(string id, TimeSpan due, TimeSpan period)
         {
-            reminders.Add(id, new RecordedReminder(id, due, period));
-            return TaskDone.Done;
+            var reminder = new RecordedReminder(id, due, period);
+            var request = new RecordedReminderRequest(id, RecordedReminderRequestKind.Register, reminder);
+            reminders.Add(id, reminder);
+            requests.Add(request);
+            return Task.CompletedTask;
         }
 
         Task IReminderService.Unregister(string id)
         {
             reminders.Remove(id);
-            return TaskDone.Done;
+            var request = new RecordedReminderRequest(id, RecordedReminderRequestKind.Unregister, null);
+            requests.Add(request);
+            return Task.CompletedTask;
         }
 
-        Task<bool> IReminderService.IsRegistered(string id) => Task.FromResult(reminders.ContainsKey(id));
-        Task<IEnumerable<string>> IReminderService.Registered() => Task.FromResult(reminders.Keys.AsEnumerable());
+        public Task<bool> IsRegistered(string id) => Task.FromResult(reminders.ContainsKey(id));
+        public Task<IEnumerable<string>> Registered() => Task.FromResult(reminders.Keys.AsEnumerable());
 
         public IEnumerator<RecordedReminder> GetEnumerator() => reminders.Values.GetEnumerator();
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
@@ -35,7 +39,33 @@ namespace Orleankka.TestKit
         public RecordedReminder this[int index] => reminders.Values.ElementAt(index);
         public RecordedReminder this[string id] => reminders[id];
 
-        public void Reset() => reminders.Clear();
+        public RecordedReminderRequest[] Requests => requests.ToArray();
+
+        public void Reset()
+        {
+            reminders.Clear();
+            requests.Clear();
+        }
+    }
+
+    public class RecordedReminderRequest
+    {
+        public readonly string Id;
+        public readonly RecordedReminderRequestKind Kind;
+        public RecordedReminder Reminder;
+
+        internal RecordedReminderRequest(string id, RecordedReminderRequestKind kind, RecordedReminder reminder)
+        {
+            Id = id;
+            Kind = kind;
+            Reminder = reminder;
+        }
+    }
+
+    public enum RecordedReminderRequestKind
+    {
+        Register,
+        Unregister
     }
 
     public class RecordedReminder

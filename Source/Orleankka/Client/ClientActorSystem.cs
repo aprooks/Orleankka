@@ -1,50 +1,46 @@
 ﻿using System;
+using System.Reflection;
+using System.Threading.Tasks;
+
+using Microsoft.Extensions.DependencyInjection;
 
 using Orleans;
-using Orleans.Runtime.Configuration;
 
 namespace Orleankka.Client
 {
-    sealed class ClientActorSystem : ActorSystem
+    /// <summary>
+    /// Client-side actor system interface
+    /// </summary>
+    public interface IClientActorSystem : IActorSystem
     {
-        static IActorSystem current;
+        /// <summary>
+        /// Creates new <see cref="IClientObservable"/>
+        /// </summary>
+        /// <returns>New instance of <see cref="IClientObservable"/></returns>
+        Task<IClientObservable> CreateObservable();
+    }
 
-        public static IActorSystem Current
+    /// <summary>
+    /// Client-side actor system
+    /// </summary>
+    public sealed class ClientActorSystem : ActorSystem, IClientActorSystem
+    {
+        readonly IGrainFactory grainFactory;
+
+        internal ClientActorSystem(
+            Assembly[] assemblies,
+            IServiceProvider serviceProvider,
+            IActorRefMiddleware middleware = null)
+            : base(assemblies, serviceProvider, middleware)
         {
-            get
-            {
-                if (!Initialized)
-                    throw new InvalidOperationException("Client actor system hasn't been initialized");
-
-                return current;
-            }
-
-            internal set
-            {
-                current = value;
-            }
+            grainFactory = serviceProvider.GetService<IGrainFactory>();
         }
 
-        public static bool Initialized => current != null;
-
-        readonly IDisposable configurator;
-
-        public ClientActorSystem(IDisposable configurator)
+        /// <inheritdoc />
+        public async Task<IClientObservable> CreateObservable()
         {
-            current = this;
-            this.configurator = configurator;
-        }
-
-        public void Initialize(ClientConfiguration configuration)
-        {
-            GrainClient.Initialize(configuration);
-        }
-
-        public override void Dispose()
-        {
-            GrainClient.Uninitialize();
-            configurator.Dispose();
-            current = null;
+            var proxy = await ClientEndpoint.Create(grainFactory);
+            return new ClientObservable(proxy);
         }
     }
 }

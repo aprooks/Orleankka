@@ -1,35 +1,38 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 
 namespace Orleankka.TestKit
 {
-    using Core;
+    using Client;
 
-    public class ActorSystemMock : IActorSystem
+    public class ActorSystemMock : IClientActorSystem
     {
+        readonly MessageSerialization serialization;
+
         readonly Dictionary<ActorPath, ActorRefMock> actors =
              new Dictionary<ActorPath, ActorRefMock>();
 
         readonly Dictionary<StreamPath, StreamRefMock> streams =
              new Dictionary<StreamPath, StreamRefMock>();
 
-        readonly IMessageSerializer serializer;
+        readonly Queue<ClientObservableMock> observables = 
+             new Queue<ClientObservableMock>();
 
-        public ActorSystemMock(IMessageSerializer serializer = null)
+        public ActorSystemMock(MessageSerialization serialization = null)
         {
-            this.serializer = serializer ?? MessageEnvelope.Serializer;
+            this.serialization = serialization ?? MessageSerialization.Default;
         }
 
         public ActorRefMock MockActorOf<TActor>(string id)
         {
-            var path = ActorPath.From(typeof(TActor), id);
+            var path = ActorPath.For(typeof(TActor), id);
             return GetOrCreateMock(path);
         }
 
-        ActorRef IActorSystem.ActorOf(Type type, string id)
+        public ActorRefMock MockActorOf(ActorPath path)
         {
-            var path = ActorPath.From(type, id);
-            return (this as IActorSystem).ActorOf(path);
+            return GetOrCreateMock(path);
         }
 
         ActorRef IActorSystem.ActorOf(ActorPath path)
@@ -42,7 +45,7 @@ namespace Orleankka.TestKit
             if (actors.ContainsKey(path))
                 return actors[path];
 
-            var mock = new ActorRefMock(path, serializer);
+            var mock = new ActorRefMock(path, serialization);
             actors.Add(path, mock);
 
             return mock;
@@ -64,12 +67,34 @@ namespace Orleankka.TestKit
             if (streams.ContainsKey(path))
                 return streams[path];
 
-            var mock = new StreamRefMock(path, serializer);
+            var mock = new StreamRefMock(path, serialization);
             streams.Add(path, mock);
 
             return mock;
         }
 
+        public ClientObservableMock MockCreateObservable()
+        {
+            var mock = new ClientObservableMock();
+            observables.Enqueue(mock);
+            return mock;
+        }
+
+        Task<IClientObservable> IClientActorSystem.CreateObservable()
+        {
+            if (observables.Count == 0)
+                throw new InvalidOperationException(
+                    "No mock has been previosly setup for this client observable request.\n" +
+                    $"Use {nameof(MockCreateObservable)} method to setup.");
+            
+            return Task.FromResult((IClientObservable)observables.Dequeue());
+        }
+
+        ClientRef IActorSystem.ClientOf(string path)
+        {
+            throw new NotImplementedException();
+        }
+        
         public void Reset()
         {
             actors.Clear();

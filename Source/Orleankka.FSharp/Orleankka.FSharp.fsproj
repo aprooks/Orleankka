@@ -1,0 +1,23 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Orleankka.FSharp</PackageId>
+    <Title>Orleankka F# api core library</Title>
+    <Description>F# api for Orleankka. Core and client-side library.</Description>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)'=='Release'">
+    <DocumentationFile>$(OutDir)\Orleankka.FSharp.xml</DocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Grains.fs" />
+    <Compile Include="References.fs" />
+    <Compile Include="System.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Orleankka\Orleankka.csproj" />
+  </ItemGroup>
+  
+</Project>

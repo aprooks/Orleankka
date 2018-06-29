@@ -34,11 +34,15 @@ obj/
 _ReSharper*
 
 #ignore certain folders
+/paket-files/
+/Artifacts/
 /Output/
 /Packages/
 /Packages/!Repositories.config
+/node_modules/
 
 #ignore codegen stuff
 orleans.codegen.cs
 
 .vs/
+.vscode/

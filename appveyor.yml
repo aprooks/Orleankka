@@ -1,0 +1,42 @@
+skip_tags: true
+
+version: 2.0.{build}
+
+image: Visual Studio 2017
+
+environment:
+  github_access_token:
+    secure: EMJUnvkJwGXaFnohUmpxqyNd0R4hpMCeUtl5aVtHqFerhd0UdYc+lTJV3H3sIhg6
+  github_email:
+    secure: B5VQnP9LQP9stxxvu2G/3MCKhVySoSVf/mvyqHY5K8M=
+
+init:
+  - git config --global core.autocrlf input
+
+build_script:
+  - call "C:\Program Files (x86)\Microsoft SDKs\Azure\Storage Emulator\AzureStorageEmulator.exe" start
+  - Nake.bat restore --packagesOnly
+  - Nake.bat AppVeyorJobId=%APPVEYOR_JOB_ID% pack
+
+test: off
+
+artifacts:
+- path: Artifacts\Release\*.nupkg
+
+for:
+
+-
+  branches:
+    only:
+      - master
+
+  install:
+    - cinst docfx
+
+  deploy_script:
+    - Nake.bat docs.build
+    - git config --global credential.helper store
+    - ps: Add-Content "$env:USERPROFILE\.git-credentials" "https://$($env:github_access_token):x-oauth-basic@github.com`n"
+    - git config --global user.email %github_email%
+    - git config --global user.name "yevhen"
+    - Nake.bat docs.release

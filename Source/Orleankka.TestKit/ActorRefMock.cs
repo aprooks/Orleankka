@@ -4,28 +4,21 @@ using System.Linq;
 using System.Linq.Expressions;
 using System.Threading.Tasks;
 
-using Orleans;
+using Orleankka.Utility;
 
 namespace Orleankka.TestKit
 {
-    using Core;
-
     [Serializable]
     public class ActorRefMock : ActorRef
     {
-        static ActorRefMock()
-        {
-            OrleansSerialization.Initialize();
-        }
-
-        [NonSerialized] readonly IMessageSerializer serializer;
+        [NonSerialized] readonly MessageSerialization serialization;
         [NonSerialized] readonly List<IExpectation> expectations = new List<IExpectation>();
         [NonSerialized] readonly List<RecordedMessage> messages = new List<RecordedMessage>();
 
-        public ActorRefMock(ActorPath path, IMessageSerializer serializer = null)
+        internal ActorRefMock(ActorPath path, MessageSerialization serialization = null)
             : base(path)
         {
-            this.serializer = serializer;
+            this.serialization = serialization ?? MessageSerialization.Default;
         }
 
         public TellExpectation<TMessage> ExpectTell<TMessage>(Expression<Func<TMessage, bool>> match = null)
@@ -42,9 +35,16 @@ namespace Orleankka.TestKit
             return expectation;
         }
 
+        public TellExpectation<TMessage> ExpectNotify<TMessage>(Expression<Func<TMessage, bool>> match = null)
+        {
+            var expectation = new TellExpectation<TMessage>(match ?? (_ => true));
+            expectations.Add(expectation);
+            return expectation;
+        }
+
         public override Task Tell(object message)
         {
-            message = Reserialize(message);
+            message = Roundtrip(message);
 
             var expectation = Match(message);
             var expected = expectation != null;
@@ -54,12 +54,12 @@ namespace Orleankka.TestKit
             if (expected)
                 expectation.Apply();
 
-            return TaskDone.Done;
+            return Task.CompletedTask;
         }
 
         public override Task<TResult> Ask<TResult>(object message)
         {
-            message = Reserialize(message);
+            message = Roundtrip(message);
 
             var expectation = Match(message);
             var expected = expectation != null;
@@ -71,16 +71,77 @@ namespace Orleankka.TestKit
                        : Task.FromResult(default(TResult));
         }
 
-        IExpectation Match(object message) => expectations.FirstOrDefault(x => x.Match(message));
-        object Reserialize(object message) => OrleansSerialization.Reserialize(serializer, message);
+        public override void Notify(object message)
+        {
+            message = Roundtrip(message);
 
-        public new void Reset()
+            var expectation = Match(message);
+            var expected = expectation != null;
+
+            messages.Add(new RecordedMessage(expected, message, typeof(DoNotExpectResult)));
+
+            if (expected)
+                expectation.Apply();
+        }
+
+        IExpectation Match(object message) => expectations.FirstOrDefault(x => x.Match(message));
+        object Roundtrip(object message) => serialization.Roundtrip(message);
+
+        public void Reset()
         {
             expectations.Clear();
             messages.Clear();
         }
 
         public IEnumerable<RecordedMessage> RecordedMessages => messages;
+    }
+
+    [Serializable]
+    public class ActorRefMock<T> : ActorRef<T> where T : IActorGrain
+    {
+        readonly ActorRefMock @ref;
+
+        public ActorRefMock(ActorRefMock @ref)
+            : base(@ref)
+        {
+            this.@ref = @ref;
+        }
+
+        public TellExpectation<TMessage> ExpectTell<TMessage>(Expression<Func<TMessage, bool>> match = null) where TMessage : ActorMessage<T> =>
+            @ref.ExpectTell(match);
+
+        public AskExpectation<TMessage> ExpectAsk<TMessage>(Expression<Func<TMessage, bool>> match = null) where TMessage : ActorMessage<T> =>
+            @ref.ExpectAsk(match);
+
+        public AskExpectation<TMessage> ExpectAsk<TMessage, TResult>(Expression<Func<TMessage, bool>> match = null) where TMessage : ActorMessage<T, TResult> =>
+            @ref.ExpectAsk(match);
+
+        public TellExpectation<TMessage> ExpectNotify<TMessage>(Expression<Func<TMessage, bool>> match = null) where TMessage : ActorMessage<T> =>
+            @ref.ExpectNotify(match);
+
+        public override Task Tell(ActorMessage<T> message) =>
+            @ref.Tell(message);
+
+        public override Task<TResult> Ask<TResult>(ActorMessage<T, TResult> message) =>
+            @ref.Ask<TResult>(message);
+
+        public override void Notify(ActorMessage<T> message) =>
+            @ref.Notify(message);
+
+        public void Reset() =>
+            @ref.Reset();
+
+        public IEnumerable<RecordedMessage> RecordedMessages =>
+            @ref.RecordedMessages;
+    }
+
+    public static class ActorSystemMockExtensions
+    {
+        public static ActorRefMock<TActor> MockTypedActorOf<TActor>(this ActorSystemMock system, string id) where TActor : IActorGrain
+        {
+            var path = ActorPath.For(typeof(TActor), id);
+            return new ActorRefMock<TActor>(system.MockActorOf(path));
+        }
     }
 
     public class RecordedMessage

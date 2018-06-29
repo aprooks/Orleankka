@@ -1,77 +1,67 @@
 ﻿using System;
 using System.Diagnostics;
-using System.Runtime.Serialization;
+using System.Diagnostics.CodeAnalysis;
 using System.Threading.Tasks;
 
-using Orleans;
+using Orleans.Concurrency;
 using Orleans.Runtime;
+using Orleans.CodeGeneration;
+using Orleans.Serialization;
+
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Orleankka
 {
-    using Core;
-    using Core.Endpoints;
     using Utility;
 
-    [Serializable]
+    [Serializable, Immutable]
     [DebuggerDisplay("a->{ToString()}")]
-    public class ActorRef : ObserverRef, IEquatable<ActorRef>, IEquatable<ActorPath>, ISerializable
+    public class ActorRef : ObserverRef, IEquatable<ActorRef>, IEquatable<ActorPath>
     {
-        public static ActorRef Deserialize(string path) => Deserialize(ActorPath.Deserialize(path));
-        public static ActorRef Deserialize(ActorPath path) => new ActorRef(path, ActorEndpoint.Proxy(path));
+        [NonSerialized] readonly IActorGrain endpoint;
+        [NonSerialized] readonly IActorRefMiddleware middleware;
 
-        readonly IActorEndpoint endpoint;
-        readonly ActorInterface @interface;
-
-        protected internal ActorRef(ActorPath path)
+        protected ActorRef(ActorPath path)
         {
             Path = path;
         }
 
-        ActorRef(ActorPath path, IActorEndpoint endpoint)
+        internal ActorRef(ActorPath path, IActorGrain endpoint, IActorRefMiddleware middleware)
             : this(path)
         {
             this.endpoint = endpoint;
-            @interface = ActorInterface.Of(path);
+            this.middleware = middleware;
         }
 
         public ActorPath Path { get; }
-        public override string Serialize() => Path.Serialize();
 
         public virtual Task Tell(object message)
         {
             Requires.NotNull(message, nameof(message));
 
-            return ReceiveVoid(message)(new RequestEnvelope(Serialize(), message));
+            return middleware.Send<object>(Path, message, async x =>
+            {
+                await endpoint.ReceiveTell(x);
+                return null;
+            });
         }
 
-        public virtual async Task<TResult> Ask<TResult>(object message)
+        public virtual Task<TResult> Ask<TResult>(object message)
         {
             Requires.NotNull(message, nameof(message));
 
-            var response = await Receive(message)(new RequestEnvelope(Serialize(), message));
-
-            return (TResult) response.Result;
+            return middleware.Send<TResult>(Path, message, endpoint.ReceiveAsk);
         }
 
         public override void Notify(object message)
         {
-            Tell(message).Ignore();
-        }
+            Requires.NotNull(message, nameof(message));
 
-        Func<RequestEnvelope, Task<ResponseEnvelope>> Receive(object message)
-        {
-            if (@interface.IsReentrant(message))
-                return endpoint.ReceiveReentrant;
-
-            return endpoint.Receive;
-        }
-
-        Func<RequestEnvelope, Task> ReceiveVoid(object message)
-        {
-            if (@interface.IsReentrant(message))
-                return endpoint.ReceiveReentrantVoid;
-
-            return endpoint.ReceiveVoid;
+            middleware.Send<object>(Path, message, async x =>
+            {
+                await endpoint.ReceiveNotify(x);
+                return null;
+            });
         }
 
         public bool Equals(ActorRef other)
@@ -93,33 +83,39 @@ namespace Orleankka
         public static bool operator ==(ActorRef left, ActorRef right) => Equals(left, right);
         public static bool operator !=(ActorRef left, ActorRef right) => !Equals(left, right);
 
+        [SuppressMessage("ReSharper", "SuspiciousTypeConversion.Global")]
         public static implicit operator GrainReference(ActorRef arg) => (GrainReference) arg.endpoint;
+        public static implicit operator ActorPath(ActorRef arg) => arg.Path;
 
-        #region Default Binary Serialization
+        #region Orleans Native Serialization
 
-        public void GetObjectData(SerializationInfo info, StreamingContext context)
+        [CopierMethod]
+        static object Copy(object input, ICopyContext context) => input;
+
+        [SerializerMethod]
+        static void Serialize(object input, ISerializationContext context, Type expected)
         {
-            info.AddValue("path", Path.Serialize(), typeof(string));
+            var writer = context.StreamWriter;
+            var @ref = (ActorRef)input;
+            writer.Write(@ref.Path);
         }
 
-        public ActorRef(SerializationInfo info, StreamingContext context)
+        [DeserializerMethod]
+        static object Deserialize(Type t, IDeserializationContext context)
         {
-            var value = (string) info.GetValue("path", typeof(string));
-            Path = ActorPath.Deserialize(value);
-            endpoint = ActorEndpoint.Proxy(Path);
-            @interface = ActorInterface.Of(Path);
+            var reader = context.StreamReader;
+            var path = ActorPath.Parse(reader.ReadString());
+            var system = context.ServiceProvider.GetRequiredService<IActorSystem>();
+            return system.ActorOf(path);
         }
 
         #endregion
     }
 
-    [Serializable]
+    [Serializable, Immutable]
     [DebuggerDisplay("a->{ToString()}")]
-    public class ActorRef<TActor> : ObserverRef<TActor>, IEquatable<ActorRef<TActor>>, IEquatable<ActorPath>, ISerializable where TActor : IActor
+    public class ActorRef<TActor> : ObserverRef<TActor>, IEquatable<ActorRef<TActor>>, IEquatable<ActorPath> where TActor : IActorGrain
     {
-        public static ActorRef<TActor> Deserialize(string path) => Deserialize(ActorPath.Deserialize(path));
-        public static ActorRef<TActor> Deserialize(ActorPath path) => new ActorRef<TActor>(ActorRef.Deserialize(path));
-
         readonly ActorRef @ref;
 
         protected internal ActorRef(ActorRef @ref)
@@ -127,13 +123,11 @@ namespace Orleankka
             this.@ref = @ref;
         }
 
-        public Task Tell(ActorMessage<TActor> message) => @ref.Tell(message);
-        public Task<TResult> Ask<TResult>(ActorMessage<TActor> message) => @ref.Ask<TResult>(message);
-        public Task<TResult> Ask<TResult>(ActorMessage<TActor, TResult> message) => @ref.Ask<TResult>(message);
+        public virtual Task Tell(ActorMessage<TActor> message) => @ref.Tell(message);
+        public virtual Task<TResult> Ask<TResult>(ActorMessage<TActor, TResult> message) => @ref.Ask<TResult>(message);
         public override void Notify(ActorMessage<TActor> message) => @ref.Notify(message);
 
         public ActorPath Path => @ref.Path;
-        public override string Serialize() => Path.Serialize();
 
         public bool Equals(ActorRef<TActor> other)
         {
@@ -148,8 +142,8 @@ namespace Orleankka
         }
 
         public bool Equals(ActorPath other) => Path.Equals(other);
-        public override string ToString()   => Path.ToString();
-        public override int GetHashCode()   => Path.GetHashCode();
+        public override string ToString() => Path.ToString();
+        public override int GetHashCode() => Path.GetHashCode();
 
         public static bool operator ==(ActorRef<TActor> left, ActorRef<TActor> right) => Equals(left, right);
         public static bool operator !=(ActorRef<TActor> left, ActorRef<TActor> right) => !Equals(left, right);
@@ -157,19 +151,6 @@ namespace Orleankka
         public static implicit operator ActorRef(ActorRef<TActor> arg) => arg.@ref;
         public static implicit operator ActorRef<TActor>(ActorRef arg) => new ActorRef<TActor>(arg);
         public static implicit operator GrainReference(ActorRef<TActor> arg) => arg.@ref;
-
-        #region Default Binary Serialization
-
-        public void GetObjectData(SerializationInfo info, StreamingContext context)
-        {
-            info.AddValue("path", @ref.Serialize(), typeof(string));
-        }
-
-        public ActorRef(SerializationInfo info, StreamingContext context)
-        {
-            @ref = ActorRef.Deserialize(info.GetString("path"));
-        }
-
-        #endregion
+        public static implicit operator ActorPath(ActorRef<TActor> arg) => arg.Path;
     }
 }

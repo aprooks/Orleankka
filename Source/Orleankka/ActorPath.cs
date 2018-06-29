@@ -1,49 +1,34 @@
 ﻿using System;
 using System.Diagnostics;
 
+using Orleans.Concurrency;
+
 namespace Orleankka
 {
-    using Core;
     using Utility;
      
-    [Serializable]
+    [Serializable, Immutable]
     [DebuggerDisplay("{ToString()}")]
     public struct ActorPath : IEquatable<ActorPath>
     {
         public static readonly ActorPath Empty = new ActorPath();
         public static readonly string[] Separator = {":"};
 
-        public static ActorPath Registered(Type type, string id)
+        public static ActorPath For<T>(string id) where T : IActorGrain => 
+            For(typeof(T), id);
+        
+        public static ActorPath For(Type @interface, string id)
         {
-            Requires.NotNull(type, nameof(type));
-
-            var code = ActorType
-                .Registered(type)
-                .Code;
-
-            return From(code, id);
-        }
-
-        public static ActorPath From(Type type, string id)
-        {
-            Requires.NotNull(type, nameof(type));
-
-            var code = ActorType
-                .From(type)
-                .Code;
-
-            return From(code, id);
-        }
-
-        public static ActorPath From(string code, string id)
-        {
-            Requires.NotNull(code, nameof(code));
+            Requires.NotNull(@interface, nameof(@interface));
             Requires.NotNull(id, nameof(id));
 
             if (string.IsNullOrWhiteSpace(id))
                 throw new ArgumentException("An actor id cannot be empty or contain whitespace only", nameof(id));
 
-            return new ActorPath(code, id);
+            if (!@interface.IsInterface || !typeof(IActorGrain).IsAssignableFrom(@interface))
+                throw new InvalidOperationException($"Type '{@interface}' should be an interface which implements IActorGrain interface");
+
+            return new ActorPath(@interface.FullName, id);
         }
 
         public static ActorPath Parse(string path)
@@ -54,58 +39,38 @@ namespace Orleankka
             if (parts.Length != 2)
                 throw new ArgumentException("Invalid actor path: " + path);
 
-            var code = parts[0];
+            var @interface = parts[0];
             var id = parts[1];
 
-            return new ActorPath(code, id);
+            return new ActorPath(@interface, id);
         }
 
-        public static ActorPath Deserialize(string path)
-        {
-            var parts = path.Split(Separator, 2, StringSplitOptions.None);
-
-            var code = parts[0];
-            var id = parts[1];
-
-            return new ActorPath(code, id);
-        }
-
-        public readonly string Code;
+        public readonly string Interface;
         public readonly string Id;
 
-        ActorPath(string code, string id)
-        {
-            Code = code;
+        ActorPath(string @interface, string id)
+        {            
+            Interface = @interface;
             Id = id;
         }
 
-        public string Serialize()
-        {
-            return $"{Code}{Separator[0]}{Id}";
-        }
-
-        public bool Equals(ActorPath other)
-        {
-            return Code == other.Code && string.Equals(Id, other.Id);
-        }
-
-        public override bool Equals(object obj)
-        {
-            return !ReferenceEquals(null, obj) && (obj is ActorPath && Equals((ActorPath)obj));
-        }
+        public bool Equals(ActorPath other) => Interface == other.Interface && string.Equals(Id, other.Id);
+        public override bool Equals(object obj) => obj is ActorPath && Equals((ActorPath)obj);
 
         public override int GetHashCode()
         {
             unchecked
             {
-                return ((Code?.GetHashCode() ?? 0) * 397) ^
+                return ((Interface?.GetHashCode() ?? 0) * 397) ^
                         (Id?.GetHashCode() ?? 0);
             }
         }
 
+        public static implicit operator string(ActorPath arg) => arg.ToString();
+
         public static bool operator ==(ActorPath left, ActorPath right) => Equals(left, right);
         public static bool operator !=(ActorPath left, ActorPath right) => !Equals(left, right);
 
-        public override string ToString() => Serialize();
+        public override string ToString() => $"{Interface}:{Id}";
     }
 }
